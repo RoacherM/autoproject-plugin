@@ -1,0 +1,41 @@
+{
+  "name": "@local/dsh-autoproject",
+  "version": "2.0.0",
+  "description": "autoproject v2 for DSH: an unattended, independently reviewed improvement ratchet on a local git repo (maker on a cheaper model, advisor on call at plan / stuck / before done, harness checks, reviewer with a hidden rubric, fast-forward); models recommended live from the configured providers",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/host/index.js",
+    "./client": "./client.js"
+  },
+  "files": [
+    "src/host",
+    "src/shared",
+    "client.js",
+    "cordis.patch.yml"
+  ],
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "node --test --test-force-exit test/*.test.mjs"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-sidebar",
+        "@deepseek-ai/dsh-client-ui-workspace",
+        "@deepseek-ai/dsh-client-ui-tool"
+      ]
+    }
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2",
+    "jsdom": "30.1.1",
+    "react": "18.3.1",
+    "react-dom": "18.3.1"
+  }
+}
