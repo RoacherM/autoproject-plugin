@@ -189,7 +189,7 @@ test('② after STUCK_AFTER failures in a row the advisor names a direction, and
   const stuckPrompt = t.roles.prompts.advisor.find((p) => p.includes('were not accepted'));
   assert.match(stuckPrompt, /refs\/autoproject\/demo\/1/);
   assert.match(stuckPrompt, /refs\/autoproject\/demo\/2/);
-  assert.match(t.roles.prompts.maker.find((p) => p.startsWith('You are maker 3')), /Direction from the advisor[\s\S]*DIRECTION-TEXT/);
+  assert.match(t.roles.prompts.maker.find((p) => p.startsWith('You are maker 3')), /Advice from the advisor[\s\S]*DIRECTION-TEXT/);
   assert.equal(t.roles.turns.filter((x) => x.submit === 'submit_plan').length, 2);
 });
 
