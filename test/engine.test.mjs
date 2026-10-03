@@ -53,6 +53,8 @@ function fakeRoles(script) {
             : await script.reviewer(cwd, text);
         return { value, stop: 'completed', text: '' };
       },
+      // Each kind reports a fixed, distinct size so sums are checkable: maker 100+10, advisor 20+2, reviewer 50+5 per session.
+      usage: () => ({ maker: { calls: 1, inputTokens: 100, outputTokens: 10 }, advisor: { calls: 1, inputTokens: 20, outputTokens: 2 }, reviewer: { calls: 1, inputTokens: 50, outputTokens: 5 } })[kind],
       cancel() { cancelled = true; },
       async dispose() {},
     };
@@ -335,4 +337,18 @@ test('the engine bumps its revision and wait() wakes on change', async () => {
   await done(t.engine, 'demo');
   assert.equal(await t.engine.wait(-5), t.engine.revision);
   assert.equal(t.engine.activity('demo'), undefined);
+});
+
+test('each iteration records tokens per role, and each piece of advice its own', async () => {
+  const t = setup({ maker: maker(bump), reviewer: () => better('MET') });
+  await t.engine.start(t.spec);
+  const run = await done(t.engine, 'demo');
+  const it = run.iterations[0];
+  assert.deepEqual(it.usage, {
+    advisor: { calls: 2, inputTokens: 40, outputTokens: 4 }, // plan + done, two sessions
+    maker: { calls: 1, inputTokens: 100, outputTokens: 10 },
+    reviewer: { calls: 1, inputTokens: 50, outputTokens: 5 },
+  });
+  assert.ok(it.advice.every((a) => a.usage.inputTokens === 20));
+  assert.equal((await t.store.get('demo')).iterations[0].usage.maker.inputTokens, 100, 'saved, not only in memory');
 });

@@ -78,6 +78,18 @@ export function activityOf(events) {
   return { toolCalls, lastTool: last.data?.name, lastHint: String(hint).split('\n')[0].slice(0, 120), lastAt: last.time ? new Date(last.time).toISOString() : undefined };
 }
 
+/** Tokens the session's model calls used, summed from its assistant messages. */
+export function usageOf(events) {
+  const sum = { calls: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0 };
+  for (const e of events) {
+    const u = e?.type === 'assistant/message' ? e.data?.usage : undefined;
+    if (!u) continue;
+    sum.calls++;
+    for (const key of Object.keys(sum)) if (key !== 'calls') sum[key] += Number(u[key]) || 0;
+  }
+  return sum;
+}
+
 /**
  * The durable facts DSH's own one-shot subagents record, so the Web GUI can open a role's history
  * through its parent (`kind: 'subagent'` address): the Host refuses a subagent child's history
@@ -98,7 +110,7 @@ function lastTurnEnd(session) {
 
 /**
  * @returns startRole({ kind, cwd, title, submits: [{ name, description, parameters }], model?, parentSession? })
- *   → { sessionId, turn(text, { submit, mode }) → { value?, stop, error?, text }, activity(), cancel(), dispose() }
+ *   → { sessionId, turn(text, { submit, mode }) → { value?, stop, error?, text }, activity(), usage(), cancel(), dispose() }
  */
 export function createRoleRunner(ctx) {
   return async function startRole({ cwd, title, submits, model, parentSession }) {
@@ -197,6 +209,7 @@ export function createRoleRunner(ctx) {
           return { value: step.captured?.value, stop: reason?.kind ?? 'unknown', error: reason?.error?.message, text: lastAssistantText(agent.session) };
         },
         activity: () => activityOf(agent.session.snapshotEvents()),
+        usage: () => usageOf(agent.session.snapshotEvents()),
         cancel() { try { agent.cancel({ kind: 'hook', reason: 'autoproject stopped' }); } catch { /* idle */ } },
         dispose: () => handle.dispose().catch(() => {}),
       };

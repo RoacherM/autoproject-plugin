@@ -8,6 +8,7 @@
 import { randomUUID } from 'node:crypto';
 import { CODE_VERSION, createEngine, RunError, STUCK_AFTER, tally } from './engine.js';
 import { describeRecommendation, modelLabel, recommend, resolveModel } from './models.js';
+import { describeMetrics, kTokens, metrics, ROLES, tokensOf } from '../shared/metrics.js';
 import { createRoleRunner } from './roles.js';
 import { registerRoutes } from './routes.js';
 import { createStore, defaultDataDir } from './store.js';
@@ -29,9 +30,11 @@ export function describeRun(run, { verbose = false } = {}) {
     `repo ${run.repo} · branch ${run.branch} · iterations ${t.iterations}/${run.limits.maxIterations} · streak ${run.streak}/${run.limits.streakLimit} · landed ${t.merged} · advice ${t.advice}`,
     `maker ${modelLabel(run.models.maker)} · reviewer ${modelLabel(run.models.reviewer)} · advisor ${modelLabel(run.models.advisor)}${run.checkCommand ? ` · checks \`${run.checkCommand}\`` : ''}`,
   ];
+  if (run.iterations.length) head.push(describeMetrics(metrics(run)));
   if (run.current) head.push(`now: iteration ${run.current.n}, ${run.current.phase}`);
-  const rows = run.iterations.map((it) => `| ${it.n} | ${it.outcome} | ${it.landing ?? ''} | ${it.sha ? it.sha.slice(0, 8) : ''} | ${clip(it.reason, verbose ? 300 : 120)} |`);
-  const table = rows.length ? ['', '| # | outcome | landing | sha | reason |', '|---|---|---|---|---|', ...rows] : [];
+  const roleTokens = (it) => ROLES.map((r) => kTokens(tokensOf(it.usage?.[r]))).join(' / ');
+  const rows = run.iterations.map((it) => `| ${it.n} | ${it.outcome} | ${it.landing ?? ''} | ${it.sha ? it.sha.slice(0, 8) : ''} | ${roleTokens(it)} | ${clip(it.reason, verbose ? 300 : 120)} |`);
+  const table = rows.length ? ['', '| # | outcome | landing | sha | tokens maker / advisor / reviewer | reason |', '|---|---|---|---|---|---|', ...rows] : [];
   const adviceLines = (it) => (it.advice ?? []).map((a) => `advisor · ${a.point} · ${a.error ?? `${a.verdict}: ${clip(a.advice, 300)}`} (session ${a.sessionId})`);
   const details = verbose ? run.iterations.map((it) => [
     `\n### ${it.n} · ${it.outcome}${it.verdict ? ` · ${it.verdict} · success ${it.success}` : ''}`,
@@ -159,7 +162,7 @@ export function apply(ctx, config = {}) {
 
   register({
     name: 'autoproject_status',
-    description: 'Show autoproject runs: status, limits, and one row per iteration (outcome, landing, candidate SHA, reason). With slug and verbose, also each verdict\'s rationale and learnings and the session ids.',
+    description: 'Show autoproject runs: status, limits, the numbers that say whether each node earns its tokens (tokens per landed commit, each role\'s share, and per advisor point how often it objects and the reviewer\'s pass rate after REVISE vs PROCEED), and one row per iteration (outcome, landing, candidate SHA, tokens per role, reason). Without slug, also the same numbers across all runs. With slug and verbose, also each plan, piece of advice, rationale and learnings, and the session ids.',
     parameters: { type: 'object', additionalProperties: false, properties: { slug: { type: 'string' }, verbose: { type: 'boolean' } } },
     isConcurrencySafe: () => true,
     async execute(args) {
@@ -168,7 +171,9 @@ export function apply(ctx, config = {}) {
         return { text: run ? describeRun(run, { verbose: args.verbose }) : `No run named ${args.slug}.` };
       }
       const runs = await engine.list();
-      return { text: `${runs.length ? runs.map((r) => describeRun(r)).join('\n\n---\n\n') : 'No autoproject runs yet.'}\n\n(plugin code ${CODE_VERSION})` };
+      if (!runs.length) return { text: `No autoproject runs yet.\n\n(plugin code ${CODE_VERSION})` };
+      const across = runs.length > 1 ? `\n\n---\n\nAcross all ${runs.length} runs:\n${describeMetrics(metrics(runs))}` : '';
+      return { text: `${runs.map((r) => describeRun(r)).join('\n\n---\n\n')}${across}\n\n(plugin code ${CODE_VERSION})` };
     },
   });
 

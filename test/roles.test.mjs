@@ -3,7 +3,7 @@ import { mkdtemp, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { createRoleRunner, subagentCatalogEntry, subagentDescriptor } from '../src/host/roles.js';
+import { createRoleRunner, subagentCatalogEntry, subagentDescriptor, usageOf } from '../src/host/roles.js';
 
 /** A fake Host with just what createRoleRunner touches; sessions record appended events. */
 function fakeHost({ parentLive = true } = {}) {
@@ -117,4 +117,14 @@ test('each turn sets its sandbox mode and its submit tool; a read-only turn refu
   assert.equal(child.guard({ name: 'write', arguments: { file_path: join(cwd, 'a') } }), undefined);
   assert.match(child.guard({ name: 'write', arguments: { file_path: '/etc/x' } }), /only touch files inside your worktree/);
   await assert.rejects(role.turn('x', { submit: 'submit_z', mode: 'read-only' }), /unknown submit tool/);
+});
+
+test('usage sums the assistant messages of a session and ignores everything else', () => {
+  const events = [
+    { type: 'assistant/message', data: { usage: { inputTokens: 100, outputTokens: 10, cacheReadTokens: 900 } } },
+    { type: 'tool/call', data: { usage: { inputTokens: 999 } } },
+    { type: 'assistant/message', data: {} },
+    { type: 'assistant/message', data: { usage: { inputTokens: 5, outputTokens: 1, reasoningTokens: 3 } } },
+  ];
+  assert.deepEqual(usageOf(events), { calls: 2, inputTokens: 105, outputTokens: 11, cacheReadTokens: 900, cacheWriteTokens: 0, reasoningTokens: 3 });
 });

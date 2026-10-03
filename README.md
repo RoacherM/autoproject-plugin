@@ -51,9 +51,24 @@ haiku/mini/nano/flash/lite small. Efforts come from each model's adapter; a role
 (maker medium, reviewer and advisor high) only when the model accepts it. Name a model as
 `provider/model`, a model id or a display name, optionally with `@effort`.
 
+## Numbers: does each node earn its tokens?
+
+Every role session sums the token usage of its own model calls; each iteration keeps it per role
+(`usage.maker / advisor / reviewer`) and each piece of advice keeps its own. `src/shared/metrics.js`
+turns that into three numbers, shown by `autoproject_status` (per run, and across all runs) and on
+the board:
+
+1. tokens per landed commit, and each role's share;
+2. per advisor point: calls, how often it says REVISE, and the reviewer's pass rate after REVISE
+   vs after PROCEED — an objection that does not raise the pass rate is not worth its tokens;
+3. after a stuck consultation: how often that iteration landed.
+
+Tokens, not money: DSH keeps no price table. "Tokens" are input + output as the provider reports
+them; cache reads are counted apart. Cut or narrow an advisor point when its numbers say it adds nothing.
+
 ## Data kept per iteration
 
-`plan`, `advice[]` (`point` stuck/plan/done, `verdict`, `advice`, `sessionId`), `stuck`, `revised`,
+`plan`, `advice[]` (`point` stuck/plan/done, `verdict`, `advice`, `sessionId`, `usage`), `usage`, `stuck`, `revised`,
 `repaired`, `makerSummary`, `sha` (also `refs/autoproject/<slug>/<n>`), the reviewer's verdict
 fields, `outcome`, `reason`, and a `timeline` of the nodes above for the board.
 
@@ -62,4 +77,9 @@ fields, `outcome`, `reason`, and a `timeline` of the nodes above for the board.
 ```sh
 npm test          # node --test, against real git repos in tmp and fake roles
 npm run build     # client.js
+npm run deploy    # test + build, then copy into the desktop profile; restart DSH to load it
 ```
+
+The desktop profile installs this folder as a `file:` copy that `pnpm install` does not refresh, so
+`deploy` copies `src/`, `client.js`, `package.json` and `cordis.patch.yml` itself. DSH caches the
+loaded module: toggling the bundle does not pick up new code, a restart does.

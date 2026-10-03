@@ -1,6 +1,6 @@
 {
   "name": "@local/dsh-autoproject",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "autoproject v2 for DSH: an unattended, independently reviewed improvement ratchet on a local git repo (maker on a cheaper model, advisor on call at plan / stuck / before done, harness checks, reviewer with a hidden rubric, fast-forward); models recommended live from the configured providers",
   "private": true,
   "type": "module",
@@ -16,7 +16,8 @@
   ],
   "scripts": {
     "build": "node build.mjs",
-    "test": "node --test --test-force-exit test/*.test.mjs"
+    "test": "node --test --test-force-exit test/*.test.mjs",
+    "deploy": "npm test && npm run build && rsync -a --delete src/ ~/.dsh/profiles/desktop/node_modules/@local/dsh-autoproject/src/ && rsync -a client.js package.json cordis.patch.yml ~/.dsh/profiles/desktop/node_modules/@local/dsh-autoproject/"
   },
   "dsh": {
     "bundle": {

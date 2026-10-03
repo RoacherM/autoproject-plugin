@@ -13,6 +13,7 @@
  */
 import * as realGit from './git.js';
 import { protectedHits, runChecks as realChecks } from './checks.js';
+import { addUsage } from '../shared/metrics.js';
 import {
   adviseDonePrompt, advisePlanPrompt, adviseStuckPrompt, implementPrompt, makerPrompt, repairPrompt, reviewerPrompt, revisePrompt,
   SUBMIT_ADVICE, SUBMIT_CANDIDATE, SUBMIT_PLAN, SUBMIT_VERDICT,
@@ -21,7 +22,7 @@ import {
 export class RunError extends Error {}
 
 /** Written into every run, so a run's record says which code produced it. */
-export const CODE_VERSION = '2.0.0';
+export const CODE_VERSION = '2.1.0';
 
 /** Consecutive NOT_BETTER iterations after which the advisor is asked for a new direction. */
 export const STUCK_AFTER = 2;
@@ -67,13 +68,23 @@ export function createEngine({ store, startRole, git = realGit, runChecks = real
     (it.timeline ??= []).push({ phase, at: iso() });
   }
 
-  /** Run one role for `use`; while it lives it is the run's active role (an advisor nests inside the maker). */
-  async function withRole(state, spec, use) {
+  /**
+   * Run one role for `use`; while it lives it is the run's active role (an advisor nests inside the
+   * maker). When it ends, its token usage is added to the iteration under its kind, and handed to
+   * `onUsage` for a record of its own.
+   */
+  async function withRole(state, it, spec, use, onUsage) {
     const role = await startRole(spec);
     state.roles.add(role);
     const previous = state.active;
     state.active = { kind: spec.kind, role };
-    try { return await use(role); } finally { state.roles.delete(role); state.active = previous; await role.dispose(); }
+    try { return await use(role); } finally {
+      state.roles.delete(role);
+      state.active = previous;
+      const used = role.usage?.();
+      if (used) { addUsage(((it.usage ??= {})[spec.kind] ??= {}), used); onUsage?.(used); }
+      await role.dispose();
+    }
   }
 
   const stopped = (r) => `${r.stop}${r.error ? `: ${r.error}` : ''}`;
@@ -86,11 +97,12 @@ export function createEngine({ store, startRole, git = realGit, runChecks = real
     const { run } = state;
     enter(it, `advise_${point}`);
     await persist(state);
-    return withRole(state, {
+    let entry;
+    return withRole(state, it, {
       kind: 'advisor', cwd, title: `autoproject ${run.slug} · advisor ${it.n} · ${point}`,
       submits: [SUBMIT_ADVICE], model: run.models.advisor, parentSession: run.originSessionId,
     }, async (advisor) => {
-      const entry = { point, sessionId: advisor.sessionId, addressable: advisor.addressable === true, at: iso() };
+      entry = { point, sessionId: advisor.sessionId, addressable: advisor.addressable === true, at: iso() };
       (it.advice ??= []).push(entry);
       await persist(state);
       const got = await advisor.turn(prompt, { submit: SUBMIT_ADVICE.name, mode: 'read-only' });
@@ -98,7 +110,7 @@ export function createEngine({ store, startRole, git = realGit, runChecks = real
       Object.assign(entry, { verdict: got.value.verdict, advice: got.value.advice });
       await persist(state);
       return got.value;
-    });
+    }, (used) => { if (entry) entry.usage = used; });
   }
 
   /** One iteration. Returns the finished iteration record; never throws. */
@@ -136,7 +148,7 @@ export function createEngine({ store, startRole, git = realGit, runChecks = real
         }
         const planFirst = n === 1 || stuck;
 
-        return withRole(state, {
+        return withRole(state, it, {
           kind: 'maker', cwd: makerPath, title: `autoproject ${run.slug} · maker ${n}`,
           submits: [SUBMIT_PLAN, SUBMIT_CANDIDATE], model: run.models.maker, parentSession: run.originSessionId,
         }, async (maker) => {
@@ -230,7 +242,7 @@ export function createEngine({ store, startRole, git = realGit, runChecks = real
       const reviewerPath = store.worktreePath(run.slug, 'reviewer');
       await git.freshWorktree(run.repo, reviewerPath, sha);
       const stat = await git.diffStat(run.repo, base, sha);
-      const judged = await withRole(state, {
+      const judged = await withRole(state, it, {
         kind: 'reviewer', cwd: reviewerPath, title: `autoproject ${run.slug} · reviewer ${n}`,
         submits: [SUBMIT_VERDICT], model: run.models.reviewer, parentSession: run.originSessionId,
       }, async (reviewer) => {

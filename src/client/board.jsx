@@ -5,6 +5,7 @@
  */
 import React from 'react';
 import { buildBoard, COLUMNS, CONDITIONAL, formatDuration, PIPELINE, steps } from '../shared/board.js';
+import { kTokens, metrics, POINTS, ROLES, tokensOf } from '../shared/metrics.js';
 import { useI18n } from './i18n.jsx';
 import { TONE } from './styles.js';
 
@@ -158,6 +159,24 @@ function Kv({ rows }) {
   return <dl className="apk-kv">{shown.map(([k, v]) => <React.Fragment key={k}><dt>{k}</dt><dd>{v}</dd></React.Fragment>)}</dl>;
 }
 
+const pct = (x) => (x === null ? '–' : `${Math.round(x * 100)}%`);
+
+/** The numbers that say whether each node earns its tokens (see shared/metrics.js). */
+function RunMetrics({ run }) {
+  const { t } = useI18n();
+  if (!run.iterations.length) return null;
+  const m = metrics(run);
+  const rows = [
+    [t('m_perLanded'), `${kTokens(m.tokensPerLanded)} · ${t('m_landed', { a: m.landed, b: m.iterations })}`],
+    [t('m_share'), ROLES.map((r) => `${t(`role_${r}`)} ${pct(m.share[r])}`).join(' · ')],
+    ...POINTS.filter((p) => m.points[p].calls).map((p) => {
+      const x = m.points[p];
+      return [`${t('advisor')} · ${t(`point_${p}`)}`, t('m_point', { calls: x.calls, revise: x.revise, afterRevise: pct(x.passAfterRevise), afterProceed: pct(x.passAfterProceed) })];
+    }),
+  ];
+  return <Kv rows={rows} />;
+}
+
 function Drawer({ card, run, now, onClose, openTranscript, act, busy }) {
   const { t } = useI18n();
   const it = card.iteration;
@@ -203,7 +222,8 @@ function Drawer({ card, run, now, onClose, openTranscript, act, busy }) {
         {!card.queued && !card.live ? (
           <section className="apk-sec">
             <h3>{t('result')}</h3>
-            <Kv rows={[[t('verdict'), card.verdict], [t('success'), card.success], [t('landing'), card.landing], [t('reason'), card.reason]]} />
+            <Kv rows={[[t('verdict'), card.verdict], [t('success'), card.success], [t('landing'), card.landing], [t('reason'), card.reason],
+              [t('tokens'), it.usage ? ROLES.map((r) => `${t(`role_${r}`)} ${kTokens(tokensOf(it.usage[r]))}`).join(' · ') : undefined]]} />
           </section>
         ) : null}
 
@@ -225,6 +245,7 @@ function Drawer({ card, run, now, onClose, openTranscript, act, busy }) {
                   <div className="apk-card-top">
                     <span>{t(`point_${x.point}`)}</span>
                     {x.verdict ? <span className={'apk-tag ' + (x.verdict === 'PROCEED' ? 'ok' : 'warn')}>{x.verdict}</span> : null}
+                    {x.usage ? <span>{kTokens(tokensOf(x.usage))} tokens</span> : null}
                     <span style={{ marginLeft: 'auto' }}><TranscriptButton t={t} label="openAdvisor" parent={card.originSessionId} session={x.sessionId} viewable={x.addressable} open={openTranscript} /></span>
                   </div>
                   <p className="apk-text">{x.error ?? x.advice ?? '…'}</p>
@@ -261,6 +282,7 @@ function Drawer({ card, run, now, onClose, openTranscript, act, busy }) {
               {card.queued && card.guidance?.length ? <Kv rows={[[t('guidance'), card.guidance.join(' / ')]]} /> : null}
               <details className="apk-more"><summary>{t('runBrief')}</summary><p className="apk-text">{run.brief}</p></details>
               <details className="apk-more"><summary>{t('runRubric')}</summary><p className="apk-text">{run.rubric}</p></details>
+              <RunMetrics run={run} />
               <Kv rows={[[t('runModels'), ['maker', 'reviewer', 'advisor'].map((r) => `${t(`role_${r}`)} ${modelText(run.models[r])}`).join(' · ')], [t('runSuccess'), run.success || t('none')], [t('runChecks'), run.checkCommand ? <span className="apk-mono">{run.checkCommand.replace(/^\S*\//, '')}</span> : t('none')], [t('runLimits'), `${t('iterations', { a: run.iterations.length, b: run.limits.maxIterations })} · ${t('streak', { a: run.streak, b: run.limits.streakLimit })}`]]} />
             </div>
           </section>
