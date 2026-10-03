@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { buildBoard, formatDuration, steps } from '../src/shared/board.js';
+import { awaitingMerge, buildBoard, formatDuration, steps } from '../src/shared/board.js';
 
 const T = (m) => new Date(Date.UTC(2026, 8, 29, 12, m)).toISOString();
 const run = (over) => ({ slug: 'a', status: 'running', limits: { maxIterations: 5, streakLimit: 3 }, guidance: [], iterations: [], current: null, ...over });
@@ -9,7 +9,7 @@ const ids = (col) => col.map((c) => c.id);
 
 test('iterations land in Vibe Kanban columns by node and outcome', () => {
   const r = run({
-    iterations: [done(1, 'BETTER', { landing: 'MERGED' }), done(2, 'NOT_BETTER'), done(3, 'ABORTED')],
+    iterations: [done(1, 'BETTER', { landing: 'LANDED' }), done(2, 'NOT_BETTER'), done(3, 'ABORTED')],
     current: { n: 4, phase: 'review', startedAt: T(4), timeline: [{ phase: 'setup', at: T(4) }, { phase: 'review', at: T(5) }], activity: { kind: 'reviewer', toolCalls: 3 } },
   });
   const other = run({ slug: 'b', current: { n: 1, phase: 'maker', startedAt: T(1), timeline: [{ phase: 'maker', at: T(2) }] } });
@@ -25,16 +25,15 @@ test('iterations land in Vibe Kanban columns by node and outcome', () => {
   assert.deepEqual({ running: stats.running, live: stats.live, landed: stats.landed }, { running: 2, live: 2, landed: 1 });
 });
 
-test('a BLOCKED candidate waits in review only while its run is paused on it; stopped runs queue nothing', () => {
-  const paused = run({ status: 'paused', pauseReason: 'dirty checkout', iterations: [done(1, 'BLOCKED')] });
-  let board = buildBoard([paused]);
-  assert.deepEqual(ids(board.columns.inreview), ['a#1']);
-  assert.equal(board.columns.inreview[0].attention, true);
+test('a run that is not running and has unmerged commits awaits merge; stopped runs queue nothing', () => {
+  let board = buildBoard([run({ status: 'stopped', pendingCommits: 2, iterations: [done(1, 'BETTER', { landing: 'LANDED' }), done(2, 'NOT_BETTER')] })]);
   assert.equal(board.stats.attention, 1);
-  assert.equal(board.columns.todo[0].paused, true);
-  board = buildBoard([run({ status: 'stopped', iterations: [done(1, 'BLOCKED'), done(2, 'BETTER')] })]);
-  assert.deepEqual(ids(board.columns.cancelled), ['a#1']);
+  assert.equal(board.stats.landed, 1);
   assert.equal(board.columns.todo.length, 0);
+  assert.equal(awaitingMerge(run({ status: 'running', pendingCommits: 2 })), false);
+  assert.equal(awaitingMerge(run({ status: 'paused', pendingCommits: 0 })), false);
+  board = buildBoard([run({ status: 'paused', pauseReason: 'paused by user', iterations: [done(1, 'BETTER')] })]);
+  assert.equal(board.columns.todo[0].paused, true);
 });
 
 test('only roles recorded as subagent children can be opened from a card', () => {

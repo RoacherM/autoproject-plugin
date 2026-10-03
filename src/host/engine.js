@@ -5,9 +5,11 @@
  *   → [first iteration, or after ②: maker plans read-only → ① advisor reviews the plan]
  *   → maker edits → plugin commits → ③ advisor asks what was missed → [REVISE: one maker revision]
  *   → protected-path gate → plugin runs checks (one repair round on failure)
- *   → fresh reviewer worktree at the candidate → reviewer verdict → BETTER lands by fast-forward of
- *   exactly that SHA; anything else is one NOT_BETTER and adds 1 to the failure streak.
+ *   → fresh reviewer worktree at the candidate → reviewer verdict → BETTER lands exactly that SHA
+ *   on the run branch `autoproject/<slug>`; anything else is one NOT_BETTER and adds 1 to the
+ *   failure streak.
  * Stops at the iteration limit, the streak limit, a MET success criterion that landed, or on request.
+ * The user's branch changes only through merge(), which a person asks for after the run.
  * No LLM decides any of this: when the advisor is called, whether its advice gets a second round,
  * retry or stop are all decided here. Roles only edit files and submit structured results.
  */
@@ -28,6 +30,9 @@ export const CODE_VERSION = '2.1.0';
 export const STUCK_AFTER = 2;
 
 const SLUG = /^[a-z0-9][a-z0-9-]{0,39}$/;
+
+/** Where a run's accepted candidates land; the user's branch only changes when they merge it. */
+export const runBranch = (slug) => `autoproject/${slug}`;
 const ROLES = ['maker', 'reviewer', 'advisor'];
 
 export function tally(run) {
@@ -36,9 +41,8 @@ export function tally(run) {
     iterations: run.iterations.length,
     better: count('verdict', 'BETTER'),
     notBetter: count('outcome', 'NOT_BETTER'),
-    merged: count('landing', 'MERGED'),
+    landed: count('landing', 'LANDED'),
     failed: count('landing', 'FAILED'),
-    blocked: count('landing', 'BLOCKED'),
     aborted: count('outcome', 'ABORTED'),
     advice: run.iterations.reduce((sum, it) => sum + (it.advice?.length ?? 0), 0),
   };
@@ -258,13 +262,12 @@ export function createEngine({ store, startRole, git = realGit, runChecks = real
       if (v.verdict !== 'BETTER') return finish('NOT_BETTER', `reviewer: ${v.summary}`);
       if (!(await git.isAncestor(run.repo, base, sha))) return finish('NOT_BETTER', 'candidate does not descend from base');
 
-      // Land exactly the reviewed SHA.
+      // Land exactly the reviewed SHA on the run branch. The user's branch waits for merge().
       enter(it, 'landing');
       await persist(state);
-      const landing = await git.fastForward(run.repo, run.branch, base, sha);
+      const landing = await git.land(run.repo, run.branch, base, sha);
       it.landing = landing.outcome;
-      if (landing.outcome === 'MERGED') return finish('BETTER', landing.reason ?? 'landed', { landed: landing.landed });
-      if (landing.outcome === 'BLOCKED') return finish('BLOCKED', `not landed: ${landing.reason}`);
+      if (landing.outcome === 'LANDED') return finish('BETTER', 'landed', { landed: landing.landed });
       return finish('NOT_BETTER', `landing failed: ${landing.reason}`);
     } catch (error) {
       log(`autoproject ${run.slug}: iteration ${n}: ${error.stack ?? error.message}`);
@@ -292,8 +295,6 @@ export function createEngine({ store, startRole, git = realGit, runChecks = real
         const reason = stopReason(run, it);
         if (reason) {
           Object.assign(run, { status: 'stopped', stopReason: reason, finishedAt: iso(), tally: tally(run) });
-        } else if (it.outcome === 'BLOCKED') {
-          Object.assign(run, { status: 'paused', pauseReason: `${it.reason}; fix it and resume (candidate ${it.sha.slice(0, 10)} is kept at refs/autoproject/${run.slug}/${it.n})` });
         } else if (run.pauseRequested) {
           Object.assign(run, { status: 'paused', pauseReason: 'paused by user', pauseRequested: false });
         }
@@ -347,13 +348,16 @@ export function createEngine({ store, startRole, git = realGit, runChecks = real
       if (await store.get(spec.slug)) throw new RunError(`a run named ${spec.slug} already exists; pick another slug`);
       if (!spec.brief?.trim() || !spec.rubric?.trim()) throw new RunError('brief and rubric are required');
       const repo = await git.toplevel(spec.repo).catch(() => { throw new RunError(`${spec.repo} is not a git repository`); });
-      const branch = spec.branch || (await git.currentBranch(repo));
-      if (!branch) throw new RunError('the main checkout is on a detached HEAD; pass branch');
-      await git.revParse(repo, branch).catch(() => { throw new RunError(`branch ${branch} does not exist`); });
+      const target = spec.branch || (await git.currentBranch(repo));
+      if (!target) throw new RunError('the main checkout is on a detached HEAD; pass branch');
+      const from = await git.revParse(repo, target).catch(() => { throw new RunError(`branch ${target} does not exist`); });
       const active = (await store.list()).find((r) => r.repo === repo && r.status !== 'stopped');
       if (active) throw new RunError(`run ${active.slug} is already ${active.status} on this repository; one run per repository`);
+      const branch = runBranch(spec.slug);
+      if (await git.branchExists(repo, branch)) throw new RunError(`branch ${branch} already exists; pick another slug or delete the branch`);
+      await git.createBranch(repo, branch, from);
       const run = {
-        slug: spec.slug, codeVersion: CODE_VERSION, repo, branch, createdAt: iso(), updatedAt: iso(), originSessionId: spec.originSessionId,
+        slug: spec.slug, codeVersion: CODE_VERSION, repo, target, branch, from, createdAt: iso(), updatedAt: iso(), originSessionId: spec.originSessionId,
         status: 'running', brief: spec.brief, rubric: spec.rubric, success: spec.success ?? '',
         checkCommand: spec.checkCommand ?? '', checkTimeoutMs: spec.checkTimeoutMs ?? 10 * 60_000,
         protectedPaths: spec.protectedPaths ?? [],
@@ -368,6 +372,33 @@ export function createEngine({ store, startRole, git = realGit, runChecks = real
     },
 
     async get(slug) { return live.get(slug)?.run ?? store.get(slug); },
+
+    /**
+     * Commits on the run branch that the user's branch does not have yet, and the stat of them;
+     * for the person deciding whether to merge.
+     */
+    async pending(slug) {
+      const run = await this.get(slug);
+      if (!run) throw new RunError(`no run named ${slug}`);
+      const commits = await git.commitCount(run.repo, run.target, run.branch);
+      return { run, commits, stat: commits ? await git.diffStat(run.repo, run.target, run.branch) : '' };
+    },
+
+    /**
+     * The one irreversible step, taken only when a person asks: merge the run branch into the
+     * user's branch in the main checkout. Not while the run is running (a landing could race it).
+     */
+    async merge(slug) {
+      const { run, commits } = await this.pending(slug);
+      if (live.has(slug) || run.status === 'running') throw new RunError(`${slug} is running; pause or stop it before merging`);
+      if (!commits) throw new RunError(`${run.branch} has nothing that ${run.target} does not already have`);
+      let merged;
+      try { merged = await git.mergeInto(run.repo, run.target, run.branch); } catch (error) { throw new RunError(error.message); }
+      (run.merges ??= []).push({ at: iso(), into: run.target, sha: merged.sha, commits, fastForward: merged.fastForward });
+      await store.save(run);
+      bump();
+      return run;
+    },
     async list() {
       const stored = await store.list();
       return stored.map((r) => live.get(r.slug)?.run ?? r);

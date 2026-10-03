@@ -4,7 +4,7 @@
  * flight it also re-reads every few seconds, because a role's tool activity does not bump the revision.
  */
 import React from 'react';
-import { buildBoard, COLUMNS, CONDITIONAL, formatDuration, PIPELINE, steps } from '../shared/board.js';
+import { awaitingMerge, buildBoard, COLUMNS, CONDITIONAL, formatDuration, PIPELINE, steps } from '../shared/board.js';
 import { kTokens, metrics, POINTS, ROLES, tokensOf } from '../shared/metrics.js';
 import { useI18n } from './i18n.jsx';
 import { TONE } from './styles.js';
@@ -77,7 +77,6 @@ function TranscriptButton({ t, label, parent, session, viewable, open }) {
 function StatusIcon({ card }) {
   if (card.live) return <span className="apk-spin" />;
   if (card.queued) return <span>{card.paused ? '⏸' : '◷'}</span>;
-  if (card.attention) return <span>!</span>;
   if (card.outcome === 'BETTER') return <span>✓</span>;
   return <span>✕</span>;
 }
@@ -98,7 +97,7 @@ function Card({ card, now, selected, onOpen }) {
     title = card.summary || card.reason || t(`outcome_${card.outcome}`);
     desc = card.summary && card.reason && card.outcome !== 'BETTER' && !card.reason.includes(card.summary) ? card.reason : card.makerSummary ?? '';
   }
-  const cls = ['apk-card', card.live && 'live', card.queued && 'queued', card.attention && 'attn', selected && 'sel'].filter(Boolean).join(' ');
+  const cls = ['apk-card', card.live && 'live', card.queued && 'queued', selected && 'sel'].filter(Boolean).join(' ');
   return (
     <button type="button" className={cls} onClick={() => onOpen(card.id)}>
       <div className="apk-card-top"><Slug slug={card.slug} /><span>#{card.n}</span><span style={{ marginLeft: 'auto' }}><StatusIcon card={card} /></span></div>
@@ -115,10 +114,23 @@ function Card({ card, now, selected, onOpen }) {
         {card.stuck ? <span className="apk-tag">{t('stuckTag')}</span> : null}
         {card.revised ? <span className="apk-tag">{t('revised')}</span> : null}
         {card.repaired ? <span className="apk-tag">{t('repaired')}</span> : null}
-        {card.attention ? <span className="apk-tag warn">{t('needsYou')}</span> : null}
         {card.queued && card.paused ? <span className="apk-tag warn">{t('pausedTag')}</span> : null}
         {card.queued && card.guidance?.length ? <span className="apk-tag">{t('guidanceQueued', { n: card.guidance.length })}</span> : null}
       </div>
+    </button>
+  );
+}
+
+/** The one irreversible step: merging the run branch into the user's branch. Two clicks, like Stop. */
+function MergeButton({ run, act, busy }) {
+  const { t } = useI18n();
+  const [confirm, setConfirm] = React.useState(false);
+  React.useEffect(() => { if (!confirm) return undefined; const x = setTimeout(() => setConfirm(false), 3000); return () => clearTimeout(x); }, [confirm]);
+  if (!awaitingMerge(run)) return null;
+  const click = (e) => { e.stopPropagation(); if (confirm) { setConfirm(false); act(run.slug, 'merge'); } else setConfirm(true); };
+  return (
+    <button type="button" className="apk-btn primary" disabled={busy} onClick={click} title={t('mergeHint', { branch: run.branch, target: run.target })}>
+      {confirm ? t('confirmMerge', { n: run.pendingCommits, target: run.target }) : t('merge', { n: run.pendingCommits, target: run.target })}
     </button>
   );
 }
@@ -127,7 +139,7 @@ function RunControls({ run, act, busy }) {
   const { t } = useI18n();
   const [confirm, setConfirm] = React.useState(false);
   React.useEffect(() => { if (!confirm) return undefined; const x = setTimeout(() => setConfirm(false), 3000); return () => clearTimeout(x); }, [confirm]);
-  if (run.status === 'stopped') return null;
+  if (run.status === 'stopped') return <div className="apk-run-ctl"><MergeButton run={run} act={act} busy={busy} /></div>;
   const stop = (e) => { e.stopPropagation(); if (confirm) { setConfirm(false); act(run.slug, 'stop'); } else setConfirm(true); };
   return (
     <div className="apk-run-ctl" onClick={(e) => e.stopPropagation()}>
@@ -135,6 +147,7 @@ function RunControls({ run, act, busy }) {
         ? <button type="button" className="apk-btn" disabled={busy || run.pauseRequested || run.stopRequested} onClick={() => act(run.slug, 'pause')}>{t('pause')}</button>
         : <button type="button" className="apk-btn primary" disabled={busy} onClick={() => act(run.slug, 'resume')}>{t('resume')}</button>}
       <button type="button" className="apk-btn danger" disabled={busy || run.stopRequested} onClick={stop}>{confirm ? t('confirmStop') : t('stop')}</button>
+      <MergeButton run={run} act={act} busy={busy} />
       {run.stopRequested ? <span className="apk-note">{t('stopRequested')}</span> : run.pauseRequested ? <span className="apk-note">{t('pauseRequested')}</span> : null}
     </div>
   );
@@ -183,7 +196,7 @@ function Drawer({ card, run, now, onClose, openTranscript, act, busy }) {
   const visited = card.queued ? [] : steps(it, new Date(now));
   const seen = new Set(visited.map((s) => s.phase));
   const future = card.live ? PIPELINE.filter((p) => !CONDITIONAL.has(p) && !seen.has(p) && PIPELINE.indexOf(p) > PIPELINE.indexOf(card.phase)) : [];
-  const outcomeTone = card.outcome === 'BETTER' ? 'ok' : card.attention ? 'warn' : 'err';
+  const outcomeTone = card.outcome === 'BETTER' ? 'ok' : 'err';
   const title = card.queued ? t('next') : card.live ? t(`node_${card.phase}`) : card.summary || card.reason;
   const a = card.activity;
   return (
@@ -191,7 +204,7 @@ function Drawer({ card, run, now, onClose, openTranscript, act, busy }) {
       <div className="apk-panel-head">
         <div style={{ flex: 1, minWidth: 0 }}>
           <div className="apk-card-top"><Slug slug={card.slug} /><span>{t('iteration', { n: card.n })}</span>
-            {!card.queued && !card.live ? <span className={'apk-tag ' + outcomeTone}>{card.attention ? t('needsYou') : t(`outcome_${card.outcome}`)}</span> : null}
+            {!card.queued && !card.live ? <span className={'apk-tag ' + outcomeTone}>{t(`outcome_${card.outcome}`)}</span> : null}
           </div>
           <h2>{title}</h2>
         </div>
@@ -283,7 +296,7 @@ function Drawer({ card, run, now, onClose, openTranscript, act, busy }) {
               <details className="apk-more"><summary>{t('runBrief')}</summary><p className="apk-text">{run.brief}</p></details>
               <details className="apk-more"><summary>{t('runRubric')}</summary><p className="apk-text">{run.rubric}</p></details>
               <RunMetrics run={run} />
-              <Kv rows={[[t('runModels'), ['maker', 'reviewer', 'advisor'].map((r) => `${t(`role_${r}`)} ${modelText(run.models[r])}`).join(' · ')], [t('runSuccess'), run.success || t('none')], [t('runChecks'), run.checkCommand ? <span className="apk-mono">{run.checkCommand.replace(/^\S*\//, '')}</span> : t('none')], [t('runLimits'), `${t('iterations', { a: run.iterations.length, b: run.limits.maxIterations })} · ${t('streak', { a: run.streak, b: run.limits.streakLimit })}`]]} />
+              <Kv rows={[[t('runBranch'), `${run.branch} ← ${run.target}${run.merges?.length ? ` · ${t('mergedTimes', { n: run.merges.length })}` : ''}`], [t('runModels'), ['maker', 'reviewer', 'advisor'].map((r) => `${t(`role_${r}`)} ${modelText(run.models[r])}`).join(' · ')], [t('runSuccess'), run.success || t('none')], [t('runChecks'), run.checkCommand ? <span className="apk-mono">{run.checkCommand.replace(/^\S*\//, '')}</span> : t('none')], [t('runLimits'), `${t('iterations', { a: run.iterations.length, b: run.limits.maxIterations })} · ${t('streak', { a: run.streak, b: run.limits.streakLimit })}`]]} />
             </div>
           </section>
         ) : null}
@@ -313,7 +326,7 @@ export function makeBoardPage({ api, openTranscript }) {
     const act = async (slug, action, text) => {
       setBusy(true);
       setActionError(null);
-      try { board.apply(await api.control(slug, action, text)); return true; } catch (error) { setActionError(error.message); return false; } finally { setBusy(false); }
+      try { board.apply(action === 'merge' ? await api.merge(slug) : await api.control(slug, action, text)); return true; } catch (error) { setActionError(error.message); return false; } finally { setBusy(false); }
     };
 
     const selectedRun = filter ? runs.find((r) => r.slug === filter) : null;

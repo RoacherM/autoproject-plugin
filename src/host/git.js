@@ -57,16 +57,39 @@ export const keepRef = (repo, slug, n, sha) => git(repo, ['update-ref', `refs/au
 export const changedFiles = async (repo, base, sha) => (await git(repo, ['diff', '--name-only', base, sha])).split('\n').filter(Boolean);
 export const diffStat = (repo, base, sha) => git(repo, ['diff', '--stat', base, sha]);
 
+/** The run's own branch, created at `sha`; refuses to reuse an existing one. */
+export const createBranch = (repo, branch, sha) => git(repo, ['branch', '--no-track', branch, sha]);
+export const branchExists = (repo, branch) => ok(git(repo, ['show-ref', '--verify', '--quiet', `refs/heads/${branch}`]));
+export const commitCount = async (repo, from, to) => Number(await git(repo, ['rev-list', '--count', `${from}..${to}`]));
+
 /**
- * Land exactly `sha` on `branch` in the main checkout by fast-forward. Refuses (BLOCKED) when the
- * checkout is dirty or on another branch, and fails when the branch moved since `base`.
+ * Land exactly `sha` on the run branch: move it from `base` to `sha` as one compare-and-swap, so a
+ * branch that moved since `base` is never overwritten. The run branch is never checked out, so
+ * neither the main checkout nor the user's branch is touched.
  */
-export async function fastForward(repo, branch, base, sha) {
-  if ((await currentBranch(repo)) !== branch) return { outcome: 'BLOCKED', reason: `main checkout is not on ${branch}` };
-  if (!(await isClean(repo))) return { outcome: 'BLOCKED', reason: 'main checkout has uncommitted changes' };
-  const head = await revParse(repo, branch);
-  if (head === sha) return { outcome: 'MERGED', landed: sha, reason: 'already landed' };
-  if (head !== base) return { outcome: 'FAILED', reason: `${branch} moved from ${base.slice(0, 8)} to ${head.slice(0, 8)}` };
-  await git(repo, ['merge', '--ff-only', '-q', sha]);
-  return { outcome: 'MERGED', landed: await revParse(repo, branch) };
+export async function land(repo, branch, base, sha) {
+  try {
+    await git(repo, ['update-ref', '-m', `autoproject: land ${sha.slice(0, 10)}`, `refs/heads/${branch}`, sha, base]);
+    return { outcome: 'LANDED', landed: sha };
+  } catch (error) {
+    return { outcome: 'FAILED', reason: `${branch} moved since ${base.slice(0, 8)} (${error.message.split('\n')[0]})` };
+  }
+}
+
+/**
+ * Merge `source` into `target` in the main checkout, which must be on `target` and clean: a
+ * fast-forward when `target` has not moved, else a merge commit. A conflicting merge is aborted
+ * and reported, leaving the checkout as it was.
+ */
+export async function mergeInto(repo, target, source) {
+  if ((await currentBranch(repo)) !== target) throw new GitError(`the main checkout is not on ${target}; check out ${target} first`);
+  if (!(await isClean(repo))) throw new GitError('the main checkout has uncommitted changes; commit or stash them first');
+  if (await ok(git(repo, ['merge', '--ff-only', '-q', source]))) return { fastForward: true, sha: await revParse(repo, target) };
+  try {
+    await git(repo, ['merge', '--no-ff', '--no-edit', '-q', '-m', `Merge ${source}`, source]);
+  } catch (error) {
+    await git(repo, ['merge', '--abort']).catch(() => {});
+    throw new GitError(`merging ${source} into ${target} conflicts; nothing was changed. Merge it by hand: git merge ${source}`);
+  }
+  return { fastForward: false, sha: await revParse(repo, target) };
 }

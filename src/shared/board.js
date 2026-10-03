@@ -5,8 +5,8 @@
  *   To Do        the next iteration a running or paused run will start
  *   In Progress  setup · advisor on a stuck streak · maker planning · advisor on the plan · maker
  *                editing · advisor before done · maker revising · checks · repair
- *   In Review    reviewer judging · landing — and BLOCKED candidates, which wait for the user
- *   Done         landed on the branch
+ *   In Review    reviewer judging · landing
+ *   Done         landed on the run branch (merging it into the user's branch is a run-level step)
  *   Cancelled    NOT_BETTER or ABORTED
  */
 
@@ -24,14 +24,10 @@ export const CONDITIONAL = new Set(['advise_stuck', 'plan', 'advise_plan', 'revi
 
 const LIVE_COLUMN = Object.fromEntries(PIPELINE.map((p) => [p, p === 'review' || p === 'landing' ? 'inreview' : 'inprogress']));
 
-/** A BLOCKED candidate waits for the user only while its run is paused on it; once resumed it is history. */
-const waitingOnUser = (run, it) => it.outcome === 'BLOCKED' && run.status === 'paused' && run.iterations.at(-1) === it;
+const finishedColumn = (it) => (it.outcome === 'BETTER' ? 'done' : 'cancelled');
 
-function finishedColumn(run, it) {
-  if (it.outcome === 'BETTER') return 'done';
-  if (waitingOnUser(run, it)) return 'inreview';
-  return 'cancelled';
-}
+/** A run whose landed work waits for the user to merge it. */
+export const awaitingMerge = (run) => run.status !== 'running' && run.pendingCommits > 0;
 
 /** When the iteration entered its current node (old records without a timeline: its start). */
 export function phaseSince(it) {
@@ -98,7 +94,7 @@ export function buildBoard(runs, { filter } = {}) {
   const shown = filter ? runs.filter((r) => r.slug === filter) : runs;
   for (const run of shown) {
     for (const it of run.iterations) {
-      columns[finishedColumn(run, it)].push(card(run, it, { live: false, attention: waitingOnUser(run, it) }));
+      columns[finishedColumn(it)].push(card(run, it, { live: false }));
     }
     if (run.current) {
       const phase = run.current.phase ?? 'setup';
@@ -117,14 +113,14 @@ export function buildBoard(runs, { filter } = {}) {
     }
   }
   const recent = (c) => new Date(c.finishedAt ?? c.phaseSince ?? 0).getTime();
-  for (const c of COLUMNS) columns[c].sort((a, b) => (b.live === true) - (a.live === true) || (b.attention === true) - (a.attention === true) || recent(b) - recent(a));
+  for (const c of COLUMNS) columns[c].sort((a, b) => (b.live === true) - (a.live === true) || recent(b) - recent(a));
   const stats = {
     running: runs.filter((r) => r.status === 'running').length,
     paused: runs.filter((r) => r.status === 'paused').length,
     stopped: runs.filter((r) => r.status === 'stopped').length,
     live: runs.filter((r) => r.current).length,
-    landed: runs.reduce((sum, r) => sum + r.iterations.filter((it) => it.landing === 'MERGED').length, 0),
-    attention: columns.inreview.filter((c) => c.attention).length,
+    landed: runs.reduce((sum, r) => sum + r.iterations.filter((it) => it.landing === 'LANDED').length, 0),
+    attention: runs.filter(awaitingMerge).length,
   };
   return { columns, stats };
 }

@@ -19,4 +19,5 @@ export const api = {
   runs: (signal) => call('GET', '/runs', { signal }),
   wait: (revision, signal) => call('GET', '/wait', { query: { revision }, signal }),
   control: (slug, action, text) => call('POST', '/control', { body: { slug, action, text } }),
+  merge: (slug) => call('POST', '/merge', { body: { slug } }),
 };

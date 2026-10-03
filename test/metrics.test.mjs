@@ -7,7 +7,7 @@ const it = (n, o) => ({ n, usage: { maker: u(1000, 100, 5000), advisor: u(200, 2
 const adv = (point, verdict) => ({ point, verdict, advice: 'x', usage: u(100, 10) });
 
 test('tokens per landed commit and each role\'s share', () => {
-  const m = metrics({ iterations: [it(1, { landing: 'MERGED', verdict: 'BETTER' }), it(2, { verdict: 'NOT_BETTER' })] });
+  const m = metrics({ iterations: [it(1, { landing: 'LANDED', verdict: 'BETTER' }), it(2, { verdict: 'NOT_BETTER' })] });
   assert.equal(m.tokens, 2 * 1870);
   assert.equal(m.cacheReadTokens, 10000);
   assert.equal(m.landed, 1);
@@ -19,12 +19,12 @@ test('tokens per landed commit and each role\'s share', () => {
 test('per advisor point: objections, and the reviewer pass rate after REVISE vs after PROCEED', () => {
   const runs = [
     { iterations: [
-      it(1, { verdict: 'BETTER', landing: 'MERGED', advice: [adv('plan', 'REVISE'), adv('done', 'REVISE')] }),
+      it(1, { verdict: 'BETTER', landing: 'LANDED', advice: [adv('plan', 'REVISE'), adv('done', 'REVISE')] }),
       it(2, { verdict: 'NOT_BETTER', advice: [adv('done', 'PROCEED')] }),
-      it(3, { verdict: 'BETTER', landing: 'MERGED', advice: [adv('done', 'REVISE')] }),
+      it(3, { verdict: 'BETTER', landing: 'LANDED', advice: [adv('done', 'REVISE')] }),
       it(4, { advice: [adv('done', 'PROCEED')] }), // never judged (checks failed): left out of pass rates
     ] },
-    { iterations: [it(1, { verdict: 'BETTER', landing: 'MERGED', advice: [adv('stuck', 'REVISE'), { point: 'done', error: 'advisor did not submit' }] })] },
+    { iterations: [it(1, { verdict: 'BETTER', landing: 'LANDED', advice: [adv('stuck', 'REVISE'), { point: 'done', error: 'advisor did not submit' }] })] },
   ];
   const m = metrics(runs);
   assert.deepEqual(m.points.done, { calls: 5, revise: 2, failed: 1, tokens: 440, passAfterRevise: 1, passAfterProceed: 0, landedAfter: 3 });

@@ -90,9 +90,13 @@ test('BETTER lands the exact reviewed SHA by fast-forward; MET stops the run', a
   assert.equal(run.status, 'stopped');
   assert.equal(run.stopReason, 'success criterion met');
   assert.deepEqual(run.iterations.map((i) => i.outcome), ['BETTER', 'BETTER']);
-  assert.equal(sh(t.dir, 'rev-parse', 'main'), run.iterations[1].sha);
-  assert.equal(readFileSync(join(t.dir, 'score.txt'), 'utf8'), '2\n');
-  assert.equal(sh(t.dir, 'log', '-1', '--format=%s', 'main'), 'autoproject demo iteration 2');
+  assert.deepEqual(run.iterations.map((i) => i.landing), ['LANDED', 'LANDED']);
+  assert.equal(run.branch, 'autoproject/demo');
+  assert.equal(sh(t.dir, 'rev-parse', 'autoproject/demo'), run.iterations[1].sha);
+  assert.equal(sh(t.dir, 'log', '-1', '--format=%s', 'autoproject/demo'), 'autoproject demo iteration 2');
+  // The user's branch and checkout are untouched until they merge.
+  assert.equal(sh(t.dir, 'rev-parse', 'main'), run.from);
+  assert.equal(readFileSync(join(t.dir, 'score.txt'), 'utf8'), '0\n');
   assert.equal(t.notified.length, 1);
   assert.equal((await t.store.get('demo')).status, 'stopped');
 });
@@ -164,8 +168,8 @@ test('③ REVISE before done gives the maker exactly one revision, committed bef
   assert.equal(it.revised, true);
   assert.equal(it.makerSummary, 'REVISED-SUMMARY');
   assert.equal(t.roles.prompts.advisor.filter((p) => p.includes('What did it miss')).length, 1);
-  assert.equal(readFileSync(join(t.dir, 'score.txt'), 'utf8'), '7\n');
-  assert.equal(sh(t.dir, 'log', '-1', '--format=%s', 'main'), 'autoproject demo iteration 1 (revised)');
+  assert.equal(sh(t.dir, 'show', 'autoproject/demo:score.txt'), '7');
+  assert.equal(sh(t.dir, 'log', '-1', '--format=%s', 'autoproject/demo'), 'autoproject demo iteration 1 (revised)');
 });
 
 test('② after STUCK_AFTER failures in a row the advisor names a direction, and that maker plans again', async () => {
@@ -232,7 +236,7 @@ test('failing checks get one repair round with the output; a passing repair goes
   assert.equal(run.iterations[0].outcome, 'BETTER');
   assert.equal(run.iterations[0].repaired, true);
   assert.ok(t.roles.prompts.maker.some((p) => /failed \(exit 1\)/.test(p)));
-  assert.equal(readFileSync(join(t.dir, 'score.txt'), 'utf8'), '5\n');
+  assert.equal(sh(t.dir, 'show', 'autoproject/demo:score.txt'), '5');
 });
 
 test('checks still failing after the repair is NOT_BETTER; a maker that changes nothing is NOT_BETTER', async () => {
@@ -244,21 +248,57 @@ test('checks still failing after the repair is NOT_BETTER; a maker that changes 
   assert.equal(t.roles.prompts.reviewer.length, 0);
 });
 
-test('a dirty main checkout BLOCKS landing and pauses; resume continues from the branch head', async () => {
+test('a dirty main checkout does not matter while running; merge waits for the run to stop and for a clean checkout on the target', async () => {
   const t = setup({ maker: maker(bump), reviewer: () => better() });
+  t.spec.maxIterations = 2;
   writeFileSync(join(t.dir, 'scratch.txt'), 'wip');
   await t.engine.start(t.spec);
+  await assert.rejects(t.engine.merge('demo'), /demo is running/);
   let run = await done(t.engine, 'demo');
-  assert.equal(run.status, 'paused');
-  assert.equal(run.iterations[0].outcome, 'BLOCKED');
-  assert.equal(run.streak, 0);
-  assert.match(run.pauseReason, /uncommitted changes/);
+  assert.deepEqual(run.iterations.map((i) => i.landing), ['LANDED', 'LANDED']);
+  assert.equal((await t.engine.pending('demo')).commits, 2);
+  await assert.rejects(t.engine.merge('demo'), /uncommitted changes/);
   execFileSync('rm', [join(t.dir, 'scratch.txt')]);
-  await t.engine.control('demo', 'resume');
-  run = await done(t.engine, 'demo');
-  assert.equal(run.status, 'stopped');
-  assert.equal(run.stopReason, 'iteration limit');
-  assert.deepEqual(run.iterations.map((i) => i.landing), ['BLOCKED', 'MERGED', 'MERGED']);
+  sh(t.dir, 'checkout', '-q', '-b', 'elsewhere');
+  await assert.rejects(t.engine.merge('demo'), /not on main/);
+  sh(t.dir, 'checkout', '-q', 'main');
+  run = await t.engine.merge('demo');
+  assert.deepEqual(run.merges.map((m) => [m.into, m.commits, m.fastForward]), [['main', 2, true]]);
+  assert.equal(sh(t.dir, 'rev-parse', 'main'), sh(t.dir, 'rev-parse', 'autoproject/demo'));
+  assert.equal(readFileSync(join(t.dir, 'score.txt'), 'utf8'), '2\n');
+  assert.equal((await t.store.get('demo')).merges.length, 1);
+  await assert.rejects(t.engine.merge('demo'), /has nothing that main does not already have/);
+});
+
+test('merge makes a merge commit when the user\'s branch moved, and aborts cleanly on a conflict', async () => {
+  let t = setup({ maker: maker(bump), reviewer: () => better() });
+  t.spec.maxIterations = 1;
+  await t.engine.start(t.spec);
+  await done(t.engine, 'demo');
+  writeFileSync(join(t.dir, 'other.txt'), 'user work\n');
+  sh(t.dir, 'add', '-A'); sh(t.dir, 'commit', '-qm', 'user work');
+  let run = await t.engine.merge('demo');
+  assert.equal(run.merges[0].fastForward, false);
+  assert.equal(readFileSync(join(t.dir, 'score.txt'), 'utf8'), '1\n');
+  assert.equal(readFileSync(join(t.dir, 'other.txt'), 'utf8'), 'user work\n');
+
+  t = setup({ maker: maker(bump), reviewer: () => better() });
+  t.spec.maxIterations = 1;
+  await t.engine.start(t.spec);
+  await done(t.engine, 'demo');
+  writeFileSync(join(t.dir, 'score.txt'), '99\n');
+  sh(t.dir, 'commit', '-qam', 'conflicting user work');
+  const head = sh(t.dir, 'rev-parse', 'main');
+  await assert.rejects(t.engine.merge('demo'), /conflicts; nothing was changed/);
+  assert.equal(sh(t.dir, 'rev-parse', 'main'), head);
+  assert.equal(sh(t.dir, 'status', '--porcelain'), '');
+  assert.equal((await t.store.get('demo')).merges, undefined);
+});
+
+test('a run refuses a slug whose branch already exists', async () => {
+  const t = setup({ maker: maker(bump), reviewer: () => better() });
+  sh(t.dir, 'branch', 'autoproject/demo');
+  await assert.rejects(t.engine.start(t.spec), /branch autoproject\/demo already exists/);
 });
 
 test('stop cancels the running maker; the iteration is ABORTED and does not count', async () => {

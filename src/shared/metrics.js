@@ -29,7 +29,7 @@ export function metrics(runs) {
   const usage = Object.fromEntries(ROLES.map((r) => [r, {}]));
   for (const it of its) for (const role of ROLES) addUsage(usage[role], it.usage?.[role]);
   const total = ROLES.reduce((sum, r) => sum + tokensOf(usage[r]), 0);
-  const landed = its.filter((it) => it.landing === 'MERGED').length;
+  const landed = its.filter((it) => it.landing === 'LANDED').length;
 
   const points = {};
   for (const point of POINTS) {
@@ -45,7 +45,7 @@ export function metrics(runs) {
       tokens: seen.reduce((sum, { a }) => sum + tokensOf(a.usage), 0),
       passAfterRevise: rate(passed(afterRevise), afterRevise.length),
       passAfterProceed: rate(passed(afterProceed), afterProceed.length),
-      landedAfter: seen.filter(({ it }) => it.landing === 'MERGED').length,
+      landedAfter: seen.filter(({ it }) => it.landing === 'LANDED').length,
     };
   }
 

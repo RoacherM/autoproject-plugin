@@ -27,9 +27,10 @@ export function describeRun(run, { verbose = false } = {}) {
   const t = tally(run);
   const head = [
     `autoproject ${run.slug} — ${run.status}${run.stopReason ? ` (${run.stopReason})` : ''}${run.pauseReason ? ` (${run.pauseReason})` : ''}`,
-    `repo ${run.repo} · branch ${run.branch} · iterations ${t.iterations}/${run.limits.maxIterations} · streak ${run.streak}/${run.limits.streakLimit} · landed ${t.merged} · advice ${t.advice}`,
+    `repo ${run.repo} · lands on ${run.branch} (from ${run.target}) · iterations ${t.iterations}/${run.limits.maxIterations} · streak ${run.streak}/${run.limits.streakLimit} · landed ${t.landed} · advice ${t.advice}`,
     `maker ${modelLabel(run.models.maker)} · reviewer ${modelLabel(run.models.reviewer)} · advisor ${modelLabel(run.models.advisor)}${run.checkCommand ? ` · checks \`${run.checkCommand}\`` : ''}`,
   ];
+  for (const m of run.merges ?? []) head.push(`merged ${m.commits} commit(s) into ${m.into} at ${m.at}${m.fastForward ? ' (fast-forward)' : ' (merge commit)'}`);
   if (run.iterations.length) head.push(describeMetrics(metrics(run)));
   if (run.current) head.push(`now: iteration ${run.current.n}, ${run.current.phase}`);
   const roleTokens = (it) => ROLES.map((r) => kTokens(tokensOf(it.usage?.[r]))).join(' / ');
@@ -48,7 +49,9 @@ export function describeRun(run, { verbose = false } = {}) {
 
 function notifyText(run) {
   const verb = run.status === 'stopped' ? 'stopped' : 'paused';
-  return `[autoproject] Run ${run.slug} ${verb}. Tell the user briefly what happened, from this report (do not start a new run):\n\n${describeRun(run)}\n\nCandidates are kept as refs/autoproject/${run.slug}/<n> in the repository; the maker, advisor and reviewer sessions are subagent children of this chat (not in the sidebar); autoproject_status with verbose lists the advice and the session ids.`;
+  const landed = tally(run).landed;
+  const merge = landed ? `\n\nThe accepted work is on ${run.branch}; ${run.target} is unchanged until the user merges it. Offer autoproject_merge (it shows the diff and asks the user before merging).` : '';
+  return `[autoproject] Run ${run.slug} ${verb}. Tell the user briefly what happened, from this report (do not start a new run):\n\n${describeRun(run)}${merge}\n\nCandidates are kept as refs/autoproject/${run.slug}/<n> in the repository; the maker, advisor and reviewer sessions are subagent children of this chat (not in the sidebar); autoproject_status with verbose lists the advice and the session ids.`;
 }
 
 /** The command as the user reads it: an absolute path to the executable shortened to its name. */
@@ -57,7 +60,7 @@ const shortCommand = (cmd) => cmd.trim().replace(/^\S*\//, '');
 /** The Go dialog: a compact summary that fits above the buttons. The full Brief and Rubric were shown in chat. */
 export function confirmation(args, repo, models) {
   const rows = [
-    ['Repo', `${repo}${args.branch ? ` · ${args.branch}` : ''}`],
+    ['Repo', `${repo}${args.branch ? ` · from ${args.branch}` : ''} · lands on autoproject/${args.slug}; you merge`],
     ['Limits', `up to ${args.max_iterations ?? 5} iterations · stop after ${args.streak_limit ?? 3} failures in a row`],
     ['Success', args.success?.trim() ? clip(args.success, 120) : 'none'],
     ['Checks', args.check_command ? `\`${shortCommand(args.check_command)}\`` : 'none'],
@@ -70,7 +73,7 @@ export function confirmation(args, repo, models) {
   ];
   return {
     question: `Start autoproject "${args.slug}"?`,
-    detail: `${rows.map(([k, v]) => `- **${k}**: ${v}`).join('\n')}\n\nRuns unattended; BETTER candidates are fast-forwarded onto the branch.`,
+    detail: `${rows.map(([k, v]) => `- **${k}**: ${v}`).join('\n')}\n\nRuns unattended; BETTER candidates land on autoproject/${args.slug}. Your branch changes only when you merge.`,
     options: [{ label: 'Go (Recommended)', description: 'Start now; say stop at any time.' }, { label: 'Not yet', description: 'Change the plan first.' }],
   };
 }
@@ -117,16 +120,16 @@ export function apply(ctx, config = {}) {
   register({
     name: 'autoproject_start',
     description: [
-      'Start an autoproject run: an unattended, independently reviewed improvement ratchet on a local git repository, with three roles. Each iteration a fresh maker agent (a cheaper capable model) works in a fresh worktree; an advisor (the strongest model, read-only) is on call at three points decided by the harness: it reviews the maker\'s plan before any edit (first iteration, and after repeated failures), names a new direction when failures repeat, and reads the diff before the candidate is handed in (one revision if it objects). The harness commits, runs the checks (one repair round) and rejects changes to protected paths; a fresh reviewer agent then judges exactly that commit against a rubric neither the maker nor the advisor sees, and only a BETTER verdict is fast-forwarded onto the branch. It stops at the iteration limit, the failure-streak limit, a met success criterion, or when the user says stop.',
+      'Start an autoproject run: an unattended, independently reviewed improvement ratchet on a local git repository, with three roles. Each iteration a fresh maker agent (a cheaper capable model) works in a fresh worktree; an advisor (the strongest model, read-only) is on call at three points decided by the harness: it reviews the maker\'s plan before any edit (first iteration, and after repeated failures), names a new direction when failures repeat, and reads the diff before the candidate is handed in (one revision if it objects). The harness commits, runs the checks (one repair round) and rejects changes to protected paths; a fresh reviewer agent then judges exactly that commit against a rubric neither the maker nor the advisor sees, and only a BETTER verdict lands, on the run branch autoproject/<slug>; the user\'s branch changes only when they merge it afterwards (autoproject_merge). It stops at the iteration limit, the failure-streak limit, a met success criterion, or when the user says stop.',
       'Before calling: (1) call autoproject_models and show the user its recommendation; (2) draft with the user the Brief — goal, scope, constraints, the checks to run and repo context, with NO evaluation criteria; the Rubric — the independent goal, what counts as BETTER, the evidence the reviewer must gather, and complexity cost; and the Limits. Take a quick look at the repo first; ask only about real gaps, one question at a time. Show the user the full Brief, Rubric, Limits and models in chat, then call this tool: it shows a short summary with a Go button and starts only after they choose Go.',
-      'Only for local repositories whose main checkout is clean and on the target branch. One run per repository.',
+      'Only for local git repositories. One run per repository. The user can keep working in the main checkout while it runs.',
     ].join('\n'),
     parameters: {
       type: 'object', additionalProperties: false, required: ['slug', 'brief', 'rubric'],
       properties: {
         slug: { type: 'string', description: 'Short lowercase-hyphen name for this run, e.g. "speed-up-parser".' },
         repo: { type: 'string', description: 'Absolute path of the repository. Default: this session\'s working directory.' },
-        branch: { type: 'string', description: 'Branch candidates land on. Default: the branch the main checkout is on.' },
+        branch: { type: 'string', description: 'The branch the run starts from and is later merged into. Default: the branch the main checkout is on. Candidates land on autoproject/<slug>, never on this branch directly.' },
         brief: { type: 'string', description: 'What the maker is told. Never evaluation criteria.' },
         rubric: { type: 'string', description: 'What the reviewer judges by. The maker never sees it.' },
         success: { type: 'string', description: 'Optional success criterion; the run stops once a landed candidate meets it.' },
@@ -174,6 +177,32 @@ export function apply(ctx, config = {}) {
       if (!runs.length) return { text: `No autoproject runs yet.\n\n(plugin code ${CODE_VERSION})` };
       const across = runs.length > 1 ? `\n\n---\n\nAcross all ${runs.length} runs:\n${describeMetrics(metrics(runs))}` : '';
       return { text: `${runs.map((r) => describeRun(r)).join('\n\n---\n\n')}${across}\n\n(plugin code ${CODE_VERSION})` };
+    },
+  });
+
+  register({
+    name: 'autoproject_merge',
+    description: 'Merge the accepted work of a paused or stopped autoproject run (branch autoproject/<slug>) into the branch it started from, in the main checkout, which must be on that branch and clean. Shows the user the commits and diff stat and merges only if they choose Merge. Fast-forward when possible, else a merge commit; a conflict is aborted and reported.',
+    parameters: { type: 'object', additionalProperties: false, required: ['slug'], properties: { slug: { type: 'string' } } },
+    async execute(args, exec) {
+      try {
+        const { run, commits, stat } = await engine.pending(args.slug);
+        if (!commits) return { text: `${run.branch} has nothing that ${run.target} does not already have.` };
+        const answer = await ctx.userQuestions.ask({
+          agent: exec?.agent, signal: exec?.signal,
+          questions: [{
+            id: 'merge', header: 'autoproject',
+            question: `Merge ${commits} commit(s) from ${run.branch} into ${run.target}?`,
+            detail: `\`git diff --stat ${run.target} ${run.branch}\`:\n\n\`\`\`\n${clip(stat, 1500)}\n\`\`\``,
+            options: [{ label: 'Merge', description: `Merge into ${run.target} in ${run.repo}.` }, { label: 'Not now', description: `Leave it on ${run.branch}.` }],
+          }],
+        });
+        const picked = answer.answers?.[0];
+        if (picked?.selected?.[0] !== 'Merge') return { text: `Not merged. The user said: ${picked?.custom || picked?.selected?.[0] || 'no'}` };
+        const merged = await engine.merge(args.slug);
+        const m = merged.merges.at(-1);
+        return { text: `Merged ${m.commits} commit(s) from ${run.branch} into ${m.into}${m.fastForward ? ' by fast-forward' : ' with a merge commit'}; ${m.into} is now ${m.sha.slice(0, 10)}.` };
+      } catch (error) { return fail(error); }
     },
   });
 

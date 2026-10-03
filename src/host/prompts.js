@@ -62,6 +62,52 @@ export const SUBMIT_VERDICT = {
 };
 
 const short = (sha) => sha.slice(0, 10);
+
+/**
+ * Each role reads only its own prompt, so the prompt alone must explain the whole process as far
+ * as that role may know it, and define every term it uses. What a role may not know (the rubric for
+ * the maker and advisor; the Brief, summaries and advice for the reviewer) is named as hidden, not shown.
+ */
+const PROCESS = {
+  maker: `## How this run works
+
+A run improves one git repository in iterations. In each iteration:
+
+1. You, the maker, get a fresh copy of the code. On some iterations you first hand in a plan, and an advisor reads it before you may edit.
+2. You edit files and hand in your change. The harness (the program running this process, not an agent) commits it; that commit is the candidate.
+3. The advisor reads the candidate's diff and either lets it go on or asks you for one revision.
+4. The harness rejects a candidate that touches protected files, and runs the checks (a test command); if they fail you get one repair attempt.
+5. An independent reviewer judges the candidate against criteria you never see. Only a candidate it judges BETTER is kept; the user merges kept work later.
+
+Terms:
+- iteration: one attempt, numbered from 1; each has a new maker.
+- candidate: the commit the harness makes from your working tree.
+- advisor: a stronger model on call at fixed points; it reads but never writes code. Its words reach you quoted, as advice, not orders.
+- lesson: one line per earlier iteration, "n · outcome · reason · learnings". The outcome is BETTER (kept), NOT_BETTER (rejected anywhere along the way; the reason says where) or ABORTED (stopped by the user). Learnings are the reviewer's hint for the next attempt.
+- guidance: notes the user sent for the next maker.`,
+
+  advisor: `## How this run works
+
+A run improves one git repository in iterations. In each iteration a maker agent (a cheaper model) gets a fresh copy of the code, edits it, and hands in a change; the harness (the program running this process, not an agent) commits it as the candidate and runs the checks (a test command). An independent reviewer then judges the candidate against criteria neither you nor the maker sees; only a candidate it judges BETTER is kept, and the user merges kept work later.
+
+You, the advisor, are on call at three points the harness decides: (plan) before the maker edits, on the first iteration and after repeated failures; (stuck) when the last two or more iterations in a row were rejected; (done) after the maker hands in a candidate, before the checks and the reviewer. Your answer goes to the maker verbatim. At (plan) and (done), REVISE gets the maker exactly one round to act on it; at (stuck), your advice becomes the next maker's direction.
+
+Terms:
+- maker, reviewer: the agents described above. You never talk to the reviewer, and it never sees your advice.
+- candidate: the commit made from the maker's work; earlier ones stay reachable as git refs \`refs/autoproject/<run>/<n>\`.
+- lesson: one line per earlier iteration, "n · outcome · reason · learnings". The outcome is BETTER (kept), NOT_BETTER (rejected anywhere along the way; the reason says where) or ABORTED (stopped by the user). Learnings are the reviewer's hint for the next attempt.
+- PROCEED / REVISE: your verdict; PROCEED lets the work go on as it is, REVISE asks the maker to change course.`,
+
+  reviewer: `## How this run works
+
+A run improves one git repository in iterations. In each, a maker agent edits the code from instructions you do not see, and the harness (the program running this process, not an agent) commits the result as the candidate, rejects it if it touches protected files, and runs the checks (a test command). You judge the candidate. Only a candidate you judge BETTER is kept; nothing else you produce reaches the maker except your one-line learnings.
+
+Terms:
+- Base: the commit the candidate was built on; the code as it stands.
+- Candidate: Base plus the maker's change, as one or more commits.
+- BETTER / NOT_BETTER: whether Base..Candidate improves on Base under the rubric below.
+- success criterion: an optional goal; when a kept candidate meets it (MET), the run ends.`,
+};
 const quote = (text) => String(text).split('\n').map((l) => `> ${l}`).join('\n');
 
 export function lessons(run, keep = 10) {
@@ -83,6 +129,8 @@ export function makerPrompt(run, n, base, guidance, { plan, direction }) {
 Your working directory is a fresh git worktree of the project at ${short(base)}. You work alone and unattended.
 
 ${first}
+
+${PROCESS.maker}
 
 ## Brief
 
@@ -137,7 +185,9 @@ const ADVISOR_RULES = `## Rules
 - Nobody will answer questions. Finish by calling \`${SUBMIT_ADVICE.name}\`.`;
 
 function advisorHead(run, n, why) {
-  return `You are the advisor for iteration ${n} of autoproject run "${run.slug}". A maker agent improves a git repository one candidate at a time; an independent reviewer later judges each candidate by criteria neither of you sees. You are on call at a few points only. ${why}
+  return `You are the advisor for iteration ${n} of autoproject run "${run.slug}". ${why}
+
+${PROCESS.advisor}
 
 ## Brief (what the maker was asked)
 
@@ -212,6 +262,8 @@ export function reviewerPrompt(run, n, base, sha, stat, checks) {
   return `You are the reviewer for iteration ${n} of autoproject run "${run.slug}". Judge ONE committed candidate against its base.
 
 Your working directory is a throwaway git worktree checked out at the candidate. Nothing you change here is kept.
+
+${PROCESS.reviewer}
 
 - Candidate: ${sha}
 - Base: ${base}

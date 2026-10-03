@@ -23,12 +23,21 @@ export function viewRun(run, activity) {
   };
 }
 
+/** Commits waiting for the user to merge; only for runs that are not running (a merge is refused then). */
+async function pendingOf(engine, run) {
+  if (run.status === 'running') return undefined;
+  try { return (await engine.pending(run.slug)).commits; } catch { return undefined; }
+}
+
 export async function boardData(engine) {
   const runs = await engine.list();
   return {
     revision: engine.revision,
     now: new Date().toISOString(),
-    runs: runs.map((run) => viewRun(run, run.status === 'running' ? engine.activity(run.slug) : undefined)),
+    runs: await Promise.all(runs.map(async (run) => ({
+      ...viewRun(run, run.status === 'running' ? engine.activity(run.slug) : undefined),
+      pendingCommits: await pendingOf(engine, run),
+    }))),
   };
 }
 
@@ -38,6 +47,13 @@ export function registerRoutes(ctx, { engine }) {
     ['GET', '/api/autoproject/wait', async (request, url) => {
       const since = Number(url.searchParams.get('revision') ?? -1);
       return json({ revision: await engine.wait(since, { signal: request.signal }) });
+    }],
+    // The person pressing Merge on the board is the confirmation.
+    ['POST', '/api/autoproject/merge', async (request) => {
+      let input;
+      try { input = await request.json(); } catch { throw new RunError('the request body is not JSON'); }
+      await engine.merge(String(input?.slug ?? ''));
+      return json(await boardData(engine));
     }],
     ['POST', '/api/autoproject/control', async (request) => {
       let input;
